@@ -169,6 +169,8 @@ install_asset "google-egress-check.service" "google-egress-check.service" "${SER
 echo "[9/11] Configuring sudoers"
 cat > "${SUDOERS_FILE}" <<'SUDO'
 Defaults:googleegress !requiretty
+Defaults:googleegress !authenticate
+Defaults:googleegress timestamp_timeout=0
 googleegress ALL=(root) NOPASSWD: /usr/local/sbin/google-egress-xray-test *
 SUDO
 chmod 0440 "${SUDOERS_FILE}"

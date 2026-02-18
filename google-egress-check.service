@@ -13,12 +13,12 @@ Restart=always
 RestartSec=3
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 # Allow setuid-root tools (sudo) to change uid/gid inside this service context.
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_AUDIT_WRITE
 RestrictSUIDSGID=false
 PrivateTmp=true
-ProtectSystem=strict
+ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/var/log/google-egress-check /var/lib/google-egress-check
+ReadWritePaths=/var/log/google-egress-check /var/lib/google-egress-check /var/lib/sudo /run/sudo
 NoNewPrivileges=false
 
 [Install]
