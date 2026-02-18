@@ -323,6 +323,14 @@ def maj(v:list[str])->str:
     v=[x for x in v if x]
     return Counter(v).most_common(1)[0][0] if v else ""
 
+def probe_public_ip(proxy:bool)->str:
+    endpoints=["https://api.ipify.org","https://ifconfig.me/ip","https://checkip.amazonaws.com"]
+    for url in endpoints:
+        ip=first_ip(curl_text(url,proxy=proxy,max_time=15))
+        if ip:
+            return ip
+    return ""
+
 def parse_tag(t:str)->str:
     tag=""
     pats=[re.compile(r"\\[[^\\]]*->\\s*([A-Za-z0-9._-]+)\\]"),re.compile(r'outboundTag[=: ]"?([A-Za-z0-9._-]+)"?'),re.compile(r'"outboundTag"\\s*:\\s*"([A-Za-z0-9._-]+)"')]
@@ -372,7 +380,30 @@ def ipv6_leak()->bool:
     return bool(dv6 and not pv6)
 
 def invalid(msg:str,fn:str=""):
-    d={"status":"invalid_config","error":mask(msg)[:6000],"xray_journal_tail":journal(),"checked_at":now()}
+    proxy_ip=probe_public_ip(True)
+    direct_ip=probe_public_ip(False)
+    generic_ip=proxy_ip or direct_ip
+    country,isp,asn=geo(generic_ip)
+    d={
+        "status":"success" if generic_ip else "invalid_config",
+        "error":mask(msg)[:6000],
+        "warning":mask(msg)[:6000],
+        "xray_journal_tail":journal(),
+        "checked_at":now(),
+        "google_seen_ip":"",
+        "google_outbound_tag":"unknown",
+        "generic_ip":generic_ip,
+        "proxy_ip":proxy_ip,
+        "direct_ip":direct_ip,
+        "effective_egress_ip":generic_ip,
+        "routing_split":False,
+        "dns_leak":False,
+        "ipv6_leak":False,
+        "country":country,
+        "isp":isp,
+        "asn":asn,
+        "fallback":bool(generic_ip),
+    }
     if fn: d["uploaded_filename"]=fn
     return d
 
@@ -396,6 +427,8 @@ def analyze(cfg:dict[str,Any],fn:str)->dict[str,Any]:
             ip=first_ip(curl_text("https://api.ipify.org",proxy=True,max_time=15))
             if ip: ps.append(ip)
         pip=maj(ps)
+        direct_ip=probe_public_ip(False)
+        effective_ip=pip or direct_ip
         lc=copy.deepcopy(c)
         lg=lc.get("log") if isinstance(lc.get("log"),dict) else {}
         lg["access"]=str(ACCESS); lg["error"]=str(ERROR); lg["loglevel"]="info"
@@ -409,9 +442,25 @@ def analyze(cfg:dict[str,Any],fn:str)->dict[str,Any]:
         tag=parse_tag(ACCESS.read_text(encoding="utf-8",errors="ignore") if ACCESS.exists() else "")
         write_cfg(p,c,u,g)
         if not restart_xray(): return invalid("Failed to restore uploaded config after log tracing",fn)
-        dnl=dns_leak(); i6=ipv6_leak(); split=bool(gip and pip and gip!=pip)
-        country,isp,asn=geo(gip or pip)
-        return {"status":"success","google_seen_ip":gip,"google_outbound_tag":tag,"generic_ip":pip,"routing_split":split,"country":country,"isp":isp,"asn":asn,"dns_leak":dnl,"ipv6_leak":i6,"checked_at":now(),"uploaded_filename":fn}
+        dnl=dns_leak(); i6=ipv6_leak(); split=bool(gip and effective_ip and gip!=effective_ip)
+        country,isp,asn=geo(effective_ip or gip)
+        return {
+            "status":"success" if (effective_ip or gip) else "invalid_config",
+            "google_seen_ip":gip,
+            "google_outbound_tag":tag,
+            "generic_ip":effective_ip,
+            "proxy_ip":pip,
+            "direct_ip":direct_ip,
+            "effective_egress_ip":effective_ip or gip,
+            "routing_split":split,
+            "country":country,
+            "isp":isp,
+            "asn":asn,
+            "dns_leak":dnl,
+            "ipv6_leak":i6,
+            "checked_at":now(),
+            "uploaded_filename":fn
+        }
     except Exception as e:
         LOGR.exception("analysis failed")
         return invalid(f"Unhandled error: {e}",fn)
