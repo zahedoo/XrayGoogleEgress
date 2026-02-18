@@ -16,6 +16,7 @@ APP_FILE="${APP_DIR}/app.py"
 SERVICE_FILE="/etc/systemd/system/${APP_NAME}.service"
 XRAY_DROPIN_DIR="/etc/systemd/system/xray.service.d"
 XRAY_DROPIN_FILE="${XRAY_DROPIN_DIR}/10-runtime-user.conf"
+SKIP_APT="${SKIP_APT:-0}"
 
 step(){ echo "[$1] $2"; }
 
@@ -34,6 +35,10 @@ wait_pkg(){
 
 install_deps(){
   step "1/8" "Installing dependencies"
+  if [[ "${SKIP_APT}" == "1" ]]; then
+    echo "SKIP_APT=1 set; skipping apt install step"
+    return
+  fi
   export DEBIAN_FRONTEND=noninteractive
   wait_pkg || true
   apt-get -o DPkg::Lock::Timeout=1200 update -y
