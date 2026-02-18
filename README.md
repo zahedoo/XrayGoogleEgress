@@ -15,6 +15,14 @@
 curl -fsSL -H 'Cache-Control: no-cache' "https://raw.githubusercontent.com/zahedoo/XrayGoogleEgress/main/install.sh?ts=$(date +%s)" | sudo bash
 ```
 
+## Troubleshooting
+
+If you see `open /usr/local/etc/xray/config.json: permission denied` or `Permission denied creating runtime directories`, run installer again from latest `main`:
+
+```bash
+curl -fsSL -H 'Cache-Control: no-cache' "https://raw.githubusercontent.com/zahedoo/XrayGoogleEgress/main/install.sh?ts=$(date +%s)" | sudo bash
+```
+
 بعد از نصب:
 
 - Dashboard: `http://SERVER_IP/`

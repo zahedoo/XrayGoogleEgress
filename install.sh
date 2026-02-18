@@ -70,6 +70,88 @@ wait_for_pkg_manager() {
   return 0
 }
 
+get_xray_runtime_user() {
+  local user
+  user="$(systemctl show -p User --value xray 2>/dev/null | tr -d '\r' || true)"
+  if [[ -z "${user}" ]]; then
+    user="root"
+  fi
+  echo "${user}"
+}
+
+get_xray_runtime_group() {
+  local group
+  group="$(systemctl show -p Group --value xray 2>/dev/null | tr -d '\r' || true)"
+  if [[ -z "${group}" ]]; then
+    local user
+    user="$(get_xray_runtime_user)"
+    if id -u "${user}" >/dev/null 2>&1; then
+      group="$(id -gn "${user}" 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -z "${group}" ]]; then
+    group="root"
+  fi
+  echo "${group}"
+}
+
+apply_xray_config_perms() {
+  local cfg_path="$1"
+  local user group
+  user="$(get_xray_runtime_user)"
+  group="$(get_xray_runtime_group)"
+  local cfg_dir
+  cfg_dir="$(dirname "${cfg_path}")"
+
+  if [[ "${user}" == "root" ]]; then
+    chown root:root "${cfg_dir}" 2>/dev/null || true
+    chmod 0750 "${cfg_dir}" 2>/dev/null || true
+    chown root:root "${cfg_path}"
+    chmod 0600 "${cfg_path}"
+    return 0
+  fi
+
+  if ! getent group "${group}" >/dev/null 2>&1; then
+    group="root"
+  fi
+  chown root:"${group}" "${cfg_dir}" 2>/dev/null || true
+  chmod 0750 "${cfg_dir}" 2>/dev/null || true
+  chown root:"${group}" "${cfg_path}" || chown root:root "${cfg_path}"
+  chmod 0640 "${cfg_path}"
+}
+
+ensure_xray_runtime_identity() {
+  if ! getent group xray >/dev/null 2>&1; then
+    groupadd --system xray
+  fi
+  if ! id -u xray >/dev/null 2>&1; then
+    useradd --system --gid xray --home-dir /nonexistent --shell /usr/sbin/nologin xray
+  fi
+
+  mkdir -p /etc/systemd/system/xray.service.d
+  cat > /etc/systemd/system/xray.service.d/10-runtime-user.conf <<'EOF'
+[Service]
+User=xray
+Group=xray
+EOF
+}
+
+normalize_xray_unit_user() {
+  local unit_file
+  unit_file="$(systemctl show -p FragmentPath --value xray 2>/dev/null | tr -d '\r' || true)"
+  if [[ -z "${unit_file}" || ! -f "${unit_file}" ]]; then
+    return 0
+  fi
+
+  if grep -Eq '^User=nobody$' "${unit_file}" || grep -Eq '^Group=nogroup$' "${unit_file}"; then
+    cp -f "${unit_file}" "${unit_file}.bak.$(date +%s)" || true
+    sed -i -E \
+      -e 's/^User=nobody$/User=xray/' \
+      -e 's/^Group=nogroup$/Group=xray/' \
+      "${unit_file}" || true
+  fi
+}
+
 detect_xray_config_path() {
   local p
   for p in /usr/local/etc/xray/config.json /etc/xray/config.json; do
@@ -137,7 +219,7 @@ recover_xray_if_inactive() {
   ]
 }
 JSON
-  chmod 0600 "${cfg_path}"
+  apply_xray_config_perms "${cfg_path}"
 
   systemctl restart xray >/dev/null 2>&1 || true
   systemctl is-active --quiet xray
@@ -174,7 +256,7 @@ ensure_xray_config() {
   ]
 }
 JSON
-    chmod 0600 "${cfg_path}"
+    apply_xray_config_perms "${cfg_path}"
   fi
 
   if ! jq empty "${cfg_path}" >/dev/null 2>&1; then
@@ -190,7 +272,8 @@ JSON
      (if any(.inbounds[]?; (.protocol == "socks") and (((.port | tonumber?) // -1) == 10808)) then . else .inbounds += [{"tag":"google-egress-socks","listen":"127.0.0.1","port":10808,"protocol":"socks","settings":{"udp":true}}] end) |
      (if (.outbounds | length) == 0 then .outbounds = [{"tag":"direct","protocol":"freedom","settings":{}}] else . end)' \
     "${cfg_path}" > "${tmp_cfg}"
-  install -m 0600 -o root -g root "${tmp_cfg}" "${cfg_path}"
+  install -m 0640 -o root -g xray "${tmp_cfg}" "${cfg_path}"
+  apply_xray_config_perms "${cfg_path}"
   rm -f "${tmp_cfg}"
 }
 
@@ -240,7 +323,8 @@ fi
 
 mkdir -p "${APP_DIR}" "${STATE_DIR}" "${UPLOAD_DIR}" "${LOG_DIR}"
 chown root:"${APP_GROUP}" "${APP_DIR}"
-chown "${APP_USER}:${APP_GROUP}" "${STATE_DIR}" "${UPLOAD_DIR}" "${LOG_DIR}"
+chown "${APP_USER}:${APP_GROUP}" "${STATE_DIR}" "${UPLOAD_DIR}"
+chown root:"${APP_GROUP}" "${LOG_DIR}"
 chmod 0750 "${APP_DIR}" "${STATE_DIR}" "${UPLOAD_DIR}" "${LOG_DIR}"
 
 if [[ ! -f "${STATE_DIR}/latest_status.json" ]]; then
@@ -252,6 +336,14 @@ chown "${APP_USER}:${APP_GROUP}" "${STATE_DIR}/latest_status.json"
 chmod 0640 "${STATE_DIR}/latest_status.json"
 
 install_xray_if_missing
+ensure_xray_runtime_identity
+normalize_xray_unit_user
+systemctl daemon-reload
+chown root:xray "${LOG_DIR}" 2>/dev/null || true
+chmod 0750 "${LOG_DIR}" 2>/dev/null || true
+touch "${LOG_DIR}/xray-access.log" "${LOG_DIR}/xray-error.log"
+chown xray:xray "${LOG_DIR}/xray-access.log" "${LOG_DIR}/xray-error.log" 2>/dev/null || true
+chmod 0640 "${LOG_DIR}/xray-access.log" "${LOG_DIR}/xray-error.log" 2>/dev/null || true
 ensure_xray_config
 
 echo "[5/11] Enabling Xray service"

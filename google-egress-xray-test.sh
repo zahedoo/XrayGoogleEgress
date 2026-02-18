@@ -21,6 +21,8 @@ BACKUP_CFG=""
 TMP_CFG=""
 LOG_ENABLED=0
 ERR_HANDLING=0
+XRAY_USER=""
+XRAY_GROUP=""
 
 mask_text() {
   sed -E \
@@ -57,10 +59,49 @@ on_unexpected_error() {
 trap on_unexpected_error ERR
 
 ensure_runtime_dirs() {
-  if ! mkdir -p "${APP_STATE_DIR}" "${UPLOAD_DIR}" "${LOG_DIR}"; then
+  if [[ ! -d "${APP_STATE_DIR}" || ! -d "${UPLOAD_DIR}" || ! -d "${LOG_DIR}" ]]; then
+    json_invalid "Runtime directories missing. Re-run installer."
+  fi
+  if [[ ! -w "${APP_STATE_DIR}" || ! -w "${LOG_DIR}" ]]; then
     json_invalid "Permission denied creating runtime directories"
   fi
   chmod 0750 "${APP_STATE_DIR}" "${UPLOAD_DIR}" "${LOG_DIR}" || true
+}
+
+detect_xray_runtime_identity() {
+  XRAY_USER="$(systemctl show -p User --value xray 2>/dev/null | tr -d '\r' || true)"
+  XRAY_GROUP="$(systemctl show -p Group --value xray 2>/dev/null | tr -d '\r' || true)"
+  if [[ -z "${XRAY_USER}" ]]; then
+    XRAY_USER="root"
+  fi
+  if [[ -z "${XRAY_GROUP}" ]]; then
+    if id -u "${XRAY_USER}" >/dev/null 2>&1; then
+      XRAY_GROUP="$(id -gn "${XRAY_USER}" 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -z "${XRAY_GROUP}" ]]; then
+    XRAY_GROUP="root"
+  fi
+  if ! getent group "${XRAY_GROUP}" >/dev/null 2>&1; then
+    XRAY_GROUP="root"
+  fi
+}
+
+apply_cfg_permissions() {
+  local target="$1"
+  local cfg_dir
+  cfg_dir="$(dirname "${target}")"
+  if [[ "${XRAY_USER}" == "root" ]]; then
+    chown root:root "${cfg_dir}" 2>/dev/null || true
+    chmod 0750 "${cfg_dir}" 2>/dev/null || true
+    chown root:root "${target}"
+    chmod 0600 "${target}"
+    return 0
+  fi
+  chown root:"${XRAY_GROUP}" "${cfg_dir}" 2>/dev/null || true
+  chmod 0750 "${cfg_dir}" 2>/dev/null || true
+  chown root:"${XRAY_GROUP}" "${target}" || chown root:root "${target}"
+  chmod 0640 "${target}"
 }
 
 cleanup() {
@@ -71,7 +112,8 @@ cleanup() {
   fi
 
   if [[ -n "${CFG_PATH}" && -f "${BACKUP_CFG}" ]]; then
-    install -m 0600 -o root -g root "${BACKUP_CFG}" "${CFG_PATH}" >/dev/null 2>&1 || true
+    cp -f "${BACKUP_CFG}" "${CFG_PATH}" >/dev/null 2>&1 || true
+    apply_cfg_permissions "${CFG_PATH}" >/dev/null 2>&1 || true
     systemctl restart xray >/dev/null 2>&1 || true
   fi
 
@@ -149,7 +191,12 @@ canonical_space_list() {
   sort -u | tr '\n' ' ' | xargs || true
 }
 
+if [[ "${EUID}" -ne 0 ]]; then
+  json_invalid "Helper must run as root via sudo"
+fi
+
 ensure_runtime_dirs
+detect_xray_runtime_identity
 
 if [[ -z "${CANDIDATE_PATH}" ]]; then
   json_invalid "Missing uploaded config path"
@@ -202,7 +249,8 @@ jq \
    (if (.outbounds | length) == 0 then .outbounds = [{"tag":"direct","protocol":"freedom","settings":{}}] else . end)' \
   "${CANDIDATE_REAL}" > "${TMP_CFG}" || json_invalid "Failed to prepare uploaded config"
 
-install -m 0600 -o root -g root "${TMP_CFG}" "${CFG_PATH}" || json_invalid "Failed to apply uploaded config"
+cp -f "${TMP_CFG}" "${CFG_PATH}" || json_invalid "Failed to apply uploaded config"
+apply_cfg_permissions "${CFG_PATH}" || json_invalid "Failed to set config permissions"
 
 if ! systemctl restart xray >/dev/null 2>&1; then
   json_invalid "Xray failed to restart with uploaded config"
