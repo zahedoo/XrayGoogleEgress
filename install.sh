@@ -20,6 +20,7 @@ LOGCTL_HELPER_DST="/usr/local/sbin/google-egress-xray-logctl"
 SERVICE_DST="/etc/systemd/system/google-egress-check.service"
 SUDOERS_FILE="/etc/sudoers.d/google-egress-check"
 RAW_BASE_URL="https://raw.githubusercontent.com/zahedoo/XrayGoogleEgress/main"
+SKIP_APT="${SKIP_APT:-0}"
 
 pre_clean_previous_state() {
   echo "[0/11] Cleaning previous ${APP_NAME} state"
@@ -41,6 +42,32 @@ pre_clean_previous_state() {
     : > "${LOG_DIR}/xray-access.log" 2>/dev/null || true
     : > "${LOG_DIR}/xray-error.log" 2>/dev/null || true
   fi
+}
+
+deps_ready() {
+  command -v python3 >/dev/null 2>&1 \
+    && command -v curl >/dev/null 2>&1 \
+    && command -v jq >/dev/null 2>&1 \
+    && command -v dig >/dev/null 2>&1 \
+    && command -v sudo >/dev/null 2>&1
+}
+
+wait_for_pkg_manager() {
+  local timeout=900
+  local waited=0
+  while pgrep -x unattended-upgr >/dev/null 2>&1 \
+      || pgrep -x apt >/dev/null 2>&1 \
+      || pgrep -x apt-get >/dev/null 2>&1 \
+      || pgrep -x dpkg >/dev/null 2>&1; do
+    if (( waited >= timeout )); then
+      echo "Timed out waiting for package manager locks to clear"
+      return 1
+    fi
+    echo "Waiting for package manager lock... ${waited}/${timeout}s"
+    sleep 5
+    waited=$((waited + 5))
+  done
+  return 0
 }
 
 detect_xray_config_path() {
@@ -193,8 +220,15 @@ install_asset() {
 echo "[1/11] Installing OS dependencies"
 export DEBIAN_FRONTEND=noninteractive
 pre_clean_previous_state
-apt-get -o DPkg::Lock::Timeout=600 update -y
-apt-get -o DPkg::Lock::Timeout=600 install -y python3 curl jq dnsutils sudo
+if [[ "${SKIP_APT}" == "1" ]]; then
+  echo "SKIP_APT=1 set; skipping apt dependency installation"
+elif deps_ready; then
+  echo "Dependencies already installed; skipping apt"
+else
+  wait_for_pkg_manager || true
+  apt-get -o DPkg::Lock::Timeout=1200 update -y
+  apt-get -o DPkg::Lock::Timeout=1200 install -y python3 curl jq dnsutils sudo
+fi
 
 echo "[2/11] Creating service user and directories"
 if ! getent group "${APP_GROUP}" >/dev/null 2>&1; then
