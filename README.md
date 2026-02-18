@@ -12,7 +12,7 @@
 ## One-Click Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zahedoo/XrayGoogleEgress/main/install.sh | sudo bash
+curl -fsSL -H 'Cache-Control: no-cache' "https://raw.githubusercontent.com/zahedoo/XrayGoogleEgress/main/install.sh?ts=$(date +%s)" | sudo bash
 ```
 
 بعد از نصب:

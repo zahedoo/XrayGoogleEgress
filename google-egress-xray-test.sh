@@ -20,15 +20,13 @@ CFG_PATH=""
 BACKUP_CFG=""
 TMP_CFG=""
 LOG_ENABLED=0
-
-mkdir -p "${APP_STATE_DIR}" "${UPLOAD_DIR}" "${LOG_DIR}"
-chmod 0750 "${APP_STATE_DIR}" "${UPLOAD_DIR}" "${LOG_DIR}" || true
+ERR_HANDLING=0
 
 mask_text() {
   sed -E \
     -e 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/***UUID***/g' \
     -e 's/("?(id|uuid|password|pass|privateKey|private_key|shortId|short_id|token|secret)"?[[:space:]]*:[[:space:]]*")([^"]+)"/\1***MASKED***"/Ig' \
-    -e 's/[A-Za-z0-9+\/=_-]{28,}/***TOKEN***/g'
+    -e 's/[A-Za-z0-9+=_-]{28,}/***TOKEN***/g'
 }
 
 journal_tail() {
@@ -45,6 +43,24 @@ json_invalid() {
     --arg tail "${tail}" \
     '{"status":"invalid_config","error":$error,"xray_journal_tail":$tail}'
   exit 2
+}
+
+on_unexpected_error() {
+  local line="${BASH_LINENO[0]:-0}"
+  local cmd="${BASH_COMMAND:-unknown}"
+  if [[ "${ERR_HANDLING}" == "1" ]]; then
+    exit 2
+  fi
+  ERR_HANDLING=1
+  json_invalid "Unexpected failure at line ${line}: ${cmd}"
+}
+trap on_unexpected_error ERR
+
+ensure_runtime_dirs() {
+  if ! mkdir -p "${APP_STATE_DIR}" "${UPLOAD_DIR}" "${LOG_DIR}"; then
+    json_invalid "Permission denied creating runtime directories"
+  fi
+  chmod 0750 "${APP_STATE_DIR}" "${UPLOAD_DIR}" "${LOG_DIR}" || true
 }
 
 cleanup() {
@@ -133,6 +149,8 @@ canonical_space_list() {
   sort -u | tr '\n' ' ' | xargs || true
 }
 
+ensure_runtime_dirs
+
 if [[ -z "${CANDIDATE_PATH}" ]]; then
   json_invalid "Missing uploaded config path"
 fi
@@ -159,7 +177,9 @@ if [[ "$(jq -r 'type' "${CANDIDATE_REAL}" 2>/dev/null)" != "object" ]]; then
   json_invalid "Xray config root must be JSON object"
 fi
 
-exec 9>"${LOCK_FILE}"
+if ! exec 9>"${LOCK_FILE}"; then
+  json_invalid "Permission denied opening lock file"
+fi
 if ! flock -w 180 9; then
   json_invalid "Another config test is in progress"
 fi
