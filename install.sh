@@ -21,6 +21,28 @@ SERVICE_DST="/etc/systemd/system/google-egress-check.service"
 SUDOERS_FILE="/etc/sudoers.d/google-egress-check"
 RAW_BASE_URL="https://raw.githubusercontent.com/zahedoo/XrayGoogleEgress/main"
 
+pre_clean_previous_state() {
+  echo "[0/11] Cleaning previous ${APP_NAME} state"
+  systemctl stop google-egress-check.service >/dev/null 2>&1 || true
+  pkill -f "/opt/${APP_NAME}/app.py" >/dev/null 2>&1 || true
+  pkill -f "${TEST_HELPER_DST}" >/dev/null 2>&1 || true
+  pkill -f "${LOGCTL_HELPER_DST}" >/dev/null 2>&1 || true
+
+  rm -f "${STATE_DIR}/xray-test.lock" \
+        "${STATE_DIR}/xray-logctl.lock" \
+        "${STATE_DIR}/xray-config.logctl.backup.json" \
+        "${STATE_DIR}/xray-config.logctl.path"
+
+  if [[ -d "${UPLOAD_DIR}" ]]; then
+    find "${UPLOAD_DIR}" -maxdepth 1 -type f -name 'upload_*.json' -delete || true
+  fi
+
+  if [[ -d "${LOG_DIR}" ]]; then
+    : > "${LOG_DIR}/xray-access.log" 2>/dev/null || true
+    : > "${LOG_DIR}/xray-error.log" 2>/dev/null || true
+  fi
+}
+
 detect_xray_config_path() {
   local p
   for p in /usr/local/etc/xray/config.json /etc/xray/config.json; do
@@ -49,6 +71,49 @@ install_xray_if_missing() {
     echo "Xray installation failed"
     exit 1
   fi
+}
+
+recover_xray_if_inactive() {
+  if systemctl is-active --quiet xray; then
+    return 0
+  fi
+
+  echo "Xray is inactive; attempting emergency config recovery"
+  local cfg_path
+  cfg_path="$(detect_xray_config_path)" || return 1
+
+  mkdir -p "${STATE_DIR}"
+  cp -f "${cfg_path}" "${STATE_DIR}/xray-broken-$(date +%s).json" 2>/dev/null || true
+
+  cat > "${cfg_path}" <<'JSON'
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "google-egress-socks",
+      "listen": "127.0.0.1",
+      "port": 10808,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {}
+    }
+  ]
+}
+JSON
+  chmod 0600 "${cfg_path}"
+
+  systemctl restart xray >/dev/null 2>&1 || true
+  systemctl is-active --quiet xray
 }
 
 ensure_xray_config() {
@@ -115,7 +180,10 @@ install_asset() {
   if [[ -f "./${local_name}" ]]; then
     cp -f "./${local_name}" "${tmp}"
   else
-    curl -fsSL "${RAW_BASE_URL}/${remote_name}" -o "${tmp}"
+    curl -fsSL \
+      -H "Cache-Control: no-cache, no-store, must-revalidate" \
+      "${RAW_BASE_URL}/${remote_name}?ts=$(date +%s)" \
+      -o "${tmp}"
   fi
 
   install -m "${mode}" -o "${owner}" -g "${group}" "${tmp}" "${dest}"
@@ -124,8 +192,9 @@ install_asset() {
 
 echo "[1/11] Installing OS dependencies"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y python3 curl jq dnsutils sudo
+pre_clean_previous_state
+apt-get -o DPkg::Lock::Timeout=600 update -y
+apt-get -o DPkg::Lock::Timeout=600 install -y python3 curl jq dnsutils sudo
 
 echo "[2/11] Creating service user and directories"
 if ! getent group "${APP_GROUP}" >/dev/null 2>&1; then
@@ -155,6 +224,11 @@ echo "[5/11] Enabling Xray service"
 systemctl daemon-reload
 systemctl enable --now xray
 systemctl restart xray
+if ! recover_xray_if_inactive; then
+  echo "Failed to recover xray service"
+  journalctl -u xray -n 80 --no-pager || true
+  exit 1
+fi
 
 echo "[6/11] Installing root helper scripts"
 install_asset "google-egress-xray-logctl.sh" "google-egress-xray-logctl.sh" "${LOGCTL_HELPER_DST}" "0750" "root" "root"
@@ -181,8 +255,9 @@ systemctl enable --now google-egress-check.service
 systemctl restart google-egress-check.service
 
 echo "[11/11] Final checks"
-if ! systemctl is-active --quiet xray; then
+if ! recover_xray_if_inactive; then
   echo "xray service is not active"
+  journalctl -u xray -n 80 --no-pager || true
   exit 1
 fi
 if ! systemctl is-active --quiet google-egress-check.service; then

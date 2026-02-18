@@ -531,7 +531,7 @@ def write_upload_file(raw_data: bytes) -> Path:
 
 def run_config_test(upload_path: Path) -> dict[str, Any]:
     try:
-        proc = run_cmd(["sudo", "-n", "-k", HELPER_TEST, str(upload_path)], timeout=300)
+        proc = run_cmd(["sudo", "-n", HELPER_TEST, str(upload_path)], timeout=300)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {
             "status": "invalid_config",
