@@ -175,6 +175,9 @@ chmod 0600 "${BACKUP_CFG}"
 jq \
   '(.inbounds //= []) |
    (.outbounds //= []) |
+   (.log = (.log // {})) |
+   (.log.loglevel = (.log.loglevel // "warning")) |
+   (del(.log.access, .log.error)) |
    (if any(.inbounds[]?; (.protocol == "socks") and (((.port | tonumber?) // -1) == 10808)) then . else .inbounds += [{"tag":"google-egress-socks","listen":"127.0.0.1","port":10808,"protocol":"socks","settings":{"udp":true}}] end) |
    (if (.outbounds | length) == 0 then .outbounds = [{"tag":"direct","protocol":"freedom","settings":{}}] else . end)' \
   "${CANDIDATE_REAL}" > "${TMP_CFG}" || json_invalid "Failed to prepare uploaded config"
@@ -238,20 +241,24 @@ if [[ -f "${ACCESS_LOG}" ]]; then
   fi
 fi
 
-GOOGLE_OUTBOUND_TAG="$(printf '%s\n' "${chunk}" | awk '
-BEGIN { tag="" }
-{
-  l=tolower($0)
-  if (index(l, "google") == 0 && index(l, "dns.google") == 0) next
-  if (match($0, /\[[^]]*->[[:space:]]*([A-Za-z0-9._-]+)\]/, a)) {
-    tag=a[1]
-  } else if (match($0, /outboundTag[=: ]"?([A-Za-z0-9._-]+)"?/, a)) {
-    tag=a[1]
-  } else if (match($0, /"outboundTag"[[:space:]]*:[[:space:]]*"([A-Za-z0-9._-]+)"/, a)) {
-    tag=a[1]
-  }
-}
-END { print tag }')"
+GOOGLE_OUTBOUND_TAG="$(
+  printf '%s\n' "${chunk}" | python3 -c 'import re,sys
+tag=""
+patterns=[
+ re.compile(r"\[[^\]]*->\s*([A-Za-z0-9._-]+)\]"),
+ re.compile(r"outboundTag[=: ]\"?([A-Za-z0-9._-]+)\"?"),
+ re.compile(r"\"outboundTag\"\s*:\s*\"([A-Za-z0-9._-]+)\""),
+]
+for line in sys.stdin:
+  lower=line.lower()
+  if "google" not in lower and "dns.google" not in lower:
+    continue
+  for p in patterns:
+    m=p.search(line)
+    if m:
+      tag=m.group(1)
+print(tag)'
+)"
 
 "${LOGCTL}" disable >/dev/null 2>&1 || true
 LOG_ENABLED=0

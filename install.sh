@@ -181,8 +181,26 @@ systemctl enable --now google-egress-check.service
 systemctl restart google-egress-check.service
 
 echo "[11/11] Final checks"
+if ! systemctl is-active --quiet xray; then
+  echo "xray service is not active"
+  exit 1
+fi
 if ! systemctl is-active --quiet google-egress-check.service; then
   echo "google-egress-check.service failed to start"
+  exit 1
+fi
+
+health_ok=0
+for _ in 1 2 3 4 5; do
+  health="$(curl -fsS --max-time 5 http://127.0.0.1/healthz 2>/dev/null || true)"
+  if echo "${health}" | jq -e '.status=="ok"' >/dev/null 2>&1; then
+    health_ok=1
+    break
+  fi
+  sleep 1
+done
+if [[ "${health_ok}" != "1" ]]; then
+  echo "Web health check failed on http://127.0.0.1/healthz"
   exit 1
 fi
 

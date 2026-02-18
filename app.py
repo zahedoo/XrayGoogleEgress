@@ -554,10 +554,12 @@ def run_config_test(upload_path: Path) -> dict[str, Any]:
         parsed = {}
 
     if not parsed:
+        stderr_masked = mask_text(stderr)[:6000]
+        first_line = stderr_masked.splitlines()[0] if stderr_masked else ""
         parsed = {
             "status": "invalid_config",
-            "error": "Invalid response from test helper",
-            "xray_journal_tail": mask_text(stderr)[:6000],
+            "error": first_line or "Invalid response from test helper",
+            "xray_journal_tail": stderr_masked,
         }
 
     parsed = sanitize_value(parsed)
