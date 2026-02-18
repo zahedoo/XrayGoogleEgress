@@ -1,0 +1,23 @@
+[Unit]
+Description=Google Egress Upload Validator
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=googleegress
+Group=googleegress
+WorkingDirectory=/opt/google-egress-check
+ExecStart=/usr/bin/python3 /opt/google-egress-check/app.py
+Restart=always
+RestartSec=3
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/google-egress-check /var/lib/google-egress-check
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
